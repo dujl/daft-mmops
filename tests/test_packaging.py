@@ -23,7 +23,7 @@ def test_text_extra_installs_the_current_daft_runtime() -> None:
     extras = _extras()
 
     assert "text" in extras
-    assert "getdaft" in _names(extras["text"])
+    assert "daft" in _names(extras["text"])
 
 
 def test_all_extra_contains_every_released_modality_dependency() -> None:
@@ -48,4 +48,4 @@ def test_unreleased_modality_extras_are_reserved_and_empty() -> None:
 def test_dev_extra_supports_every_documented_verification_command() -> None:
     extras = _extras()
 
-    assert {"getdaft", "pytest", "black", "build", "twine"} <= _names(extras["dev"])
+    assert {"daft", "pytest", "black", "build", "twine"} <= _names(extras["dev"])

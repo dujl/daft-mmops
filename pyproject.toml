@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-daft = ["getdaft>=0.7,<0.8"]
-text = ["getdaft>=0.7,<0.8"]
+daft = ["daft>=0.7"]
+text = ["daft>=0.7"]
 image = []
 audio = []
 video = []
@@ -24,13 +24,13 @@ document = []
 multimodal = []
 # Flattened union of text + image + audio + video + document + multimodal.
 # PEP 621 extras cannot directly include other extras by name.
-all = ["getdaft>=0.7,<0.8"]
+all = ["daft>=0.7"]
 test = [
-    "getdaft>=0.7,<0.8",
+    "daft>=0.7",
     "pytest>=7",
 ]
 dev = [
-    "getdaft>=0.7,<0.8",
+    "daft>=0.7",
     "pytest>=7",
     "black>=24",
     "build>=1",
