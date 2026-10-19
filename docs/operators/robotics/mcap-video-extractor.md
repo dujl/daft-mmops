@@ -142,7 +142,7 @@ from mmops.operators.robotics import McapVideoExtractor
 df = daft.from_pydict(
     {
         "mcap_uri": ["s3://input-bucket/captures/camera.mcap"],
-        "mp4_uri": ["oss://output-bucket/run-001/camera.mp4"],
+        "mp4_uri": ["tos://output-bucket/run-001/camera.mp4"],
     }
 )
 
