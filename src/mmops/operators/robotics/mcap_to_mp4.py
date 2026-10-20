@@ -536,7 +536,7 @@ def _decode_foxglove_compressed_image(payload: bytes) -> tuple[int, str, bytes]:
 def _iter_compressed_frames(
     input_stream: BinaryIO,
     requested_topic: str | None,
-    unsupported_formats: list[tuple[str, str, str]],
+    unsupported_formats: list[tuple[str, str]],
 ) -> Iterator[_CompressedFrame]:
     from mcap.reader import make_reader
     from mcap_ros2.decoder import DecoderFactory
@@ -548,28 +548,21 @@ def _iter_compressed_frames(
     ):
         if schema is None:
             continue
+
+        format_name: str
+        timestamp_ns: int
+        data: bytes
         if schema.name == "sensor_msgs/msg/CompressedImage":
             decoder = decoder_factory.decoder_for(channel.message_encoding, schema)
             if decoder is None:
                 continue
             decoded = decoder(message.data)
-            format_name = decoded.format.lower()
-            if format_name != "h264":
-                if not unsupported_formats:
-                    unsupported_formats.append((channel.topic, decoded.format, "h264"))
-                continue
+            format_name = str(decoded.format)
             timestamp_ns = int(decoded.header.stamp.sec) * 1_000_000_000 + int(
                 decoded.header.stamp.nanosec
             )
-            yield _CompressedFrame(
-                topic=channel.topic,
-                codec="h264",
-                timestamp_ns=timestamp_ns,
-                data=bytes(decoded.data),
-            )
-            continue
-
-        if (
+            data = bytes(decoded.data)
+        elif (
             schema.name == "foxglove.CompressedImage"
             and schema.encoding == "jsonschema"
             and channel.message_encoding == "cdr"
@@ -577,16 +570,24 @@ def _iter_compressed_frames(
             timestamp_ns, format_name, data = _decode_foxglove_compressed_image(
                 message.data
             )
-            if format_name.lower() != "jpeg":
-                if not unsupported_formats:
-                    unsupported_formats.append((channel.topic, format_name, "jpeg"))
-                continue
-            yield _CompressedFrame(
-                topic=channel.topic,
-                codec="mjpeg",
-                timestamp_ns=timestamp_ns,
-                data=data,
-            )
+        else:
+            continue
+
+        normalized_format = format_name.strip().lower()
+        if normalized_format == "h264":
+            source_codec: Literal["h264", "mjpeg"] = "h264"
+        elif normalized_format == "jpeg":
+            source_codec = "mjpeg"
+        else:
+            if not any(topic == channel.topic for topic, _ in unsupported_formats):
+                unsupported_formats.append((channel.topic, format_name))
+            continue
+        yield _CompressedFrame(
+            topic=channel.topic,
+            codec=source_codec,
+            timestamp_ns=timestamp_ns,
+            data=data,
+        )
 
 
 def _decode_single_jpeg(decoder: Any, payload: bytes) -> Any:
@@ -594,9 +595,7 @@ def _decode_single_jpeg(decoder: Any, payload: bytes) -> Any:
 
     frames = decoder.decode(av.Packet(payload))
     if len(frames) != 1:
-        raise ValueError(
-            "each Foxglove CompressedImage JPEG payload must decode to one frame"
-        )
+        raise ValueError("each CompressedImage JPEG payload must decode to one frame")
     return frames[0]
 
 
@@ -660,7 +659,7 @@ def _write_video(
     output_stream: Any | None = None
     jpeg_decoder: Any | None = None
     first_jpeg_frame: Any | None = None
-    unsupported_formats: list[tuple[str, str, str]] = []
+    unsupported_formats: list[tuple[str, str]] = []
     time_base = Fraction(1, 1_000_000_000)
 
     with av.open(str(temporary), mode="w", format="mp4") as output_container:
@@ -793,6 +792,21 @@ def _write_video(
             pending_packet.duration = last_frame_duration_ns or 1
             output_container.mux(pending_packet)
 
+    selected_unsupported_format = next(
+        (
+            (topic, format_name)
+            for topic, format_name in unsupported_formats
+            if topic == selected_topic
+        ),
+        None,
+    )
+    if selected_unsupported_format is not None:
+        unsupported_topic, unsupported_format = selected_unsupported_format
+        raise ValueError(
+            f"topic {unsupported_topic!r} uses unsupported CompressedImage "
+            f"format {unsupported_format!r}; expected 'h264' or 'jpeg'"
+        )
+
     if (
         frame_count == 0
         or selected_topic is None
@@ -800,12 +814,10 @@ def _write_video(
         or actual_output_codec is None
     ):
         if unsupported_formats:
-            unsupported_topic, unsupported_format, expected_format = (
-                unsupported_formats[0]
-            )
+            unsupported_topic, unsupported_format = unsupported_formats[0]
             raise ValueError(
                 f"topic {unsupported_topic!r} uses unsupported CompressedImage "
-                f"format {unsupported_format!r}; expected {expected_format!r}"
+                f"format {unsupported_format!r}; expected 'h264' or 'jpeg'"
             )
         topic_description = requested_topic or "a supported CompressedImage topic"
         raise ValueError(f"MCAP does not contain {topic_description}")
@@ -882,7 +894,7 @@ def _verify_mp4(
                         )
                     decoded_frame_count += 1
     except av.error.FFmpegError as error:
-        raise ValueError("remuxed MP4 contains undecodable H.264 data") from error
+        raise ValueError("remuxed MP4 contains undecodable video data") from error
     if packet_count != expected_packets:
         raise ValueError(
             f"remuxed MP4 packet count {packet_count} does not match MCAP frame "

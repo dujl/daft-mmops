@@ -165,6 +165,7 @@ def _write_foxglove_compressed_image_mcap(
     path: Path,
     *,
     topic: str = "ego_video/head",
+    format_: str = "jpeg",
     packets: list[bytes] | None = None,
     trailing_attachment: bytes | None = None,
 ) -> list[bytes]:
@@ -200,7 +201,7 @@ def _write_foxglove_compressed_image_mcap(
             data=_foxglove_compressed_image_cdr(
                 timestamp_ns=timestamp_ns,
                 frame_id="ego_video_head",
-                format_="jpeg",
+                format_=format_,
                 data=packet,
             ),
         )
@@ -223,18 +224,24 @@ def _write_compressed_image_mcap(
     topics: tuple[str, ...] = ("/camera/image/compressed",),
     packets: list[bytes] | None = None,
     topic_formats: dict[str, str] | None = None,
+    frame_formats: tuple[str, ...] | None = None,
 ) -> None:
     start_ns = 1_700_000_000_000_000_000
+    source_packets = packets or _h264_packets()
+    if frame_formats is not None and len(frame_formats) != len(source_packets):
+        raise ValueError("frame_formats must match the packet count")
     with Writer(str(path)) as writer:
         schema = writer.register_msgdef(
             "sensor_msgs/msg/CompressedImage",
             COMPRESSED_IMAGE_MSGDEF,
         )
-        for frame_index, payload in enumerate(packets or _h264_packets()):
+        for frame_index, payload in enumerate(source_packets):
             timestamp_ns = start_ns + frame_index * 33_333_333
             for topic in topics:
                 topic_format = (
-                    topic_formats[topic] if topic_formats is not None else format_
+                    frame_formats[frame_index]
+                    if frame_formats is not None
+                    else topic_formats[topic] if topic_formats is not None else format_
                 )
                 message = SimpleNamespace(
                     header=SimpleNamespace(
@@ -245,7 +252,7 @@ def _write_compressed_image_mcap(
                         frame_id="camera",
                     ),
                     format=topic_format,
-                    data=payload if topic_format == "h264" else b"jpeg-data",
+                    data=payload,
                 )
                 writer.write_message(
                     topic,
@@ -310,6 +317,56 @@ def test_extract_remuxes_local_h264_mcap_without_reencoding(tmp_path: Path) -> N
     assert stream.codec_context.name == "h264"
     assert (stream.codec_context.width, stream.codec_context.height) == (64, 48)
     assert len(frames) == 3
+    assert duration_ns == result["duration_ns"]
+
+
+def test_extract_uses_ros2_format_to_encode_jpeg_as_h264(tmp_path: Path) -> None:
+    source = tmp_path / "camera.mcap"
+    output = tmp_path / "camera.mp4"
+    _write_compressed_image_mcap(
+        source,
+        format_="jpeg",
+        packets=_jpeg_packets(),
+    )
+
+    result = operators.McapVideoExtractor(
+        h264_preset="ultrafast",
+    ).extract(str(source), str(output))
+
+    with av.open(output) as container:
+        stream = container.streams.video[0]
+        decoded_frames = list(container.decode(stream))
+        duration_ns = int(stream.duration * stream.time_base * 1_000_000_000)
+    assert result["codec"] == "h264"
+    assert result["topic"] == "/camera/image/compressed"
+    assert result["frame_count"] == 3
+    assert stream.codec_context.name == "h264"
+    assert (stream.codec_context.width, stream.codec_context.height) == (64, 48)
+    assert len(decoded_frames) == 3
+    assert duration_ns == result["duration_ns"]
+
+
+def test_extract_uses_foxglove_format_to_remux_h264(tmp_path: Path) -> None:
+    source = tmp_path / "camera.mcap"
+    output = tmp_path / "camera.mp4"
+    _write_foxglove_compressed_image_mcap(
+        source,
+        format_="h264",
+        packets=_h264_packets(),
+    )
+
+    result = operators.McapVideoExtractor().extract(str(source), str(output))
+
+    with av.open(output) as container:
+        stream = container.streams.video[0]
+        decoded_frames = list(container.decode(stream))
+        duration_ns = int(stream.duration * stream.time_base * 1_000_000_000)
+    assert result["codec"] == "h264"
+    assert result["topic"] == "ego_video/head"
+    assert result["frame_count"] == 3
+    assert stream.codec_context.name == "h264"
+    assert (stream.codec_context.width, stream.codec_context.height) == (64, 48)
+    assert len(decoded_frames) == 3
     assert duration_ns == result["duration_ns"]
 
 
@@ -509,8 +566,8 @@ def test_explicit_remote_topic_uses_mcap_index_to_skip_attachment(
 
 def test_unsupported_formats_keep_only_one_diagnostic(tmp_path: Path) -> None:
     source = tmp_path / "unsupported.mcap"
-    _write_compressed_image_mcap(source, format_="jpeg")
-    unsupported_formats: list[tuple[str, str, str]] = []
+    _write_compressed_image_mcap(source, format_="png")
+    unsupported_formats: list[tuple[str, str]] = []
 
     with source.open("rb") as stream:
         frames = list(
@@ -518,7 +575,7 @@ def test_unsupported_formats_keep_only_one_diagnostic(tmp_path: Path) -> None:
         )
 
     assert frames == []
-    assert unsupported_formats == [("/camera/image/compressed", "jpeg", "h264")]
+    assert unsupported_formats == [("/camera/image/compressed", "png")]
 
 
 @pytest.mark.parametrize("scheme", ["s3", "ftp"])
@@ -1380,36 +1437,79 @@ def test_extract_requires_topic_when_mcap_has_multiple_h264_streams(
     assert result["frame_count"] == 3
 
 
-def test_extract_rejects_non_h264_compressed_images_without_publishing(
+def test_extract_rejects_unsupported_compressed_images_without_publishing(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "jpeg.mcap"
+    source = tmp_path / "png.mcap"
     output = tmp_path / "camera.mp4"
-    _write_compressed_image_mcap(source, format_="jpeg")
+    _write_compressed_image_mcap(source, format_="png")
 
-    with pytest.raises(ValueError, match="format 'jpeg'.*expected 'h264'"):
+    with pytest.raises(ValueError, match="format 'png'.*expected 'h264' or 'jpeg'"):
         operators.McapVideoExtractor().extract(str(source), str(output))
 
     assert not output.exists()
 
 
-def test_extract_auto_selects_the_only_h264_topic_from_mixed_formats(
+def test_extract_rejects_unsupported_format_within_selected_stream(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "mixed-formats.mcap"
+    source = tmp_path / "changing-formats.mcap"
     output = tmp_path / "camera.mp4"
     _write_compressed_image_mcap(
         source,
-        topics=("/preview/jpeg", "/camera/image/compressed"),
-        topic_formats={
-            "/preview/jpeg": "jpeg",
-            "/camera/image/compressed": "h264",
-        },
+        packets=_jpeg_packets(),
+        frame_formats=("jpeg", "png", "jpeg"),
     )
 
-    result = operators.McapVideoExtractor().extract(str(source), str(output))
+    with pytest.raises(ValueError, match="format 'png'.*expected 'h264' or 'jpeg'"):
+        operators.McapVideoExtractor(h264_preset="ultrafast").extract(
+            str(source), str(output)
+        )
 
-    assert result["topic"] == "/camera/image/compressed"
+    assert not output.exists()
+
+
+def test_extract_rejects_supported_format_change_within_selected_stream(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "changing-codecs.mcap"
+    output = tmp_path / "camera.mp4"
+    h264_packets = _h264_packets()
+    jpeg_packets = _jpeg_packets()
+    _write_compressed_image_mcap(
+        source,
+        packets=[h264_packets[0], jpeg_packets[1], h264_packets[2]],
+        frame_formats=("h264", "jpeg", "h264"),
+    )
+
+    with pytest.raises(ValueError, match="changes compressed video format"):
+        operators.McapVideoExtractor().extract(str(source), str(output))
+
+    assert not output.exists()
+
+
+def test_extract_requires_topic_when_mcap_has_multiple_jpeg_streams(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "multi-camera-jpeg.mcap"
+    output = tmp_path / "camera.mp4"
+    _write_compressed_image_mcap(
+        source,
+        format_="jpeg",
+        packets=_jpeg_packets(),
+        topics=("/left/image/compressed", "/right/image/compressed"),
+    )
+
+    with pytest.raises(ValueError, match="multiple.*pass topic explicitly"):
+        operators.McapVideoExtractor().extract(str(source), str(output))
+
+    assert not output.exists()
+    result = operators.McapVideoExtractor(h264_preset="ultrafast").extract(
+        str(source),
+        str(output),
+        topic="/right/image/compressed",
+    )
+    assert result["topic"] == "/right/image/compressed"
     assert result["frame_count"] == 3
 
 

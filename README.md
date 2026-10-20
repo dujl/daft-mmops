@@ -32,7 +32,7 @@ Available extras:
 | `image` | reserved for image operators; currently empty |
 | `audio` | reserved for audio operators; currently empty |
 | `video` | reserved for video operators; currently empty |
-| `robotics` | Daft runtime, MCAP/ROS2 decoding, H.264 remuxing, and fsspec interfaces; object-store backends are caller-supplied |
+| `robotics` | Daft runtime, MCAP compressed-image decoding, H.264/JPEG processing, and fsspec interfaces; object-store backends are caller-supplied |
 | `document` | reserved for document operators; currently empty |
 | `multimodal` | reserved for cross-modal operators; currently empty |
 | `all` | dependency union of `text`, `image`, `audio`, `video`, `robotics`, `document`, and `multimodal` |

@@ -170,7 +170,7 @@ pass `topic="/camera/front"` to `extractor.extract(...)` inside `run`.
 The UDF also accepts local source and destination paths in the same call.
 
 `output_codec="h264"` (the default) remuxes source H.264 without re-encoding
-and decodes Foxglove JPEG frames before CPU encoding with `libx264`.
+and decodes JPEG frames before CPU encoding with `libx264`.
 `output_codec="source"` remuxes H.264 or JPEG as H.264 or MJPEG, respectively.
 MJPEG source remuxing decodes the first frame to establish stream parameters,
 checks later frame dimensions from their JPEG headers, and performs one full
@@ -179,9 +179,12 @@ For JPEG-to-H.264 encoding, `h264_crf` is an integer from `0` through `51`
 (default `23`), and `h264_preset` is an x264 preset (default `"medium"`). These
 are constructor options shared by all rows processed by that extractor.
 
-Supported camera messages are ROS2 `sensor_msgs/msg/CompressedImage` with
-H.264 data and CDR-encoded `foxglove.CompressedImage` with JPEG data. Camera
-messages are read in MCAP **file order**, without a whole-file log-time sort;
+Supported camera schemas are ROS2 `sensor_msgs/msg/CompressedImage` and
+CDR-encoded `foxglove.CompressedImage`. For both schemas, the message's
+`format` field is the sole source of the compressed video format: `h264`
+selects H.264 remuxing and `jpeg` selects the JPEG processing path. The schema
+name is used only to deserialize the message. Camera messages are read in MCAP
+**file order**, without a whole-file log-time sort;
 their header timestamps must be strictly increasing in that order. JPEG frames
 must keep one resolution throughout the selected topic; the UDF rejects a
 dimension change instead of silently scaling frames. Source H.264 with B-frame
